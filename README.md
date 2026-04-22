@@ -2,94 +2,284 @@
 
 A compute-constrained empirical study of adaptive sparse attention schedules in GraphGPS.
 
+This project extends  
+**[k-Maximum Inner Product Attention for Graph Transformers and the Expressive Power of GraphGPS](https://arxiv.org/abs/2604.03815)**.
+
+---
+
 ## Overview
 
-Graph transformers are powerful for modelling long-range interactions, but dense self-attention scales poorly on large graphs. k-Maximum Inner Product (k-MIP) attention addresses this by restricting each query to its top-k keys, reducing the cost of global attention.
+Graph transformers are effective at modelling long-range interactions, but dense self-attention scales poorly on large graphs. k-Maximum Inner Product (k-MIP) attention addresses this by restricting each query to its top-\(k\) keys, reducing the cost of global attention.
 
-This project investigates whether **adapting k during training** can improve performance over a fixed-k baseline. In particular, it compares four k-allocation strategies within the **GraphGPS + k-MIP** framework:
+This project investigates whether **adapting \(k\) during training** can improve performance over a fixed-\(k\) baseline. In particular, it compares four \(k\)-allocation strategies within the **GraphGPS + k-MIP** framework:
 
-- **Fixed k**
+- **Fixed \(k\)**
 - **Global cosine annealing**
 - **Layerwise cosine annealing**
 - **Hybrid layerwise + entropy-adaptive allocation**
 
-The core question is whether adaptive sparsification reduces supervision starvation and improves predictive performance, especially on larger or more structurally diverse graph tasks.
+The central question is whether adaptive sparsification mitigates supervision starvation and improves predictive performance, especially on larger or more structurally diverse graph tasks.
+
+---
 
 ## Key Results
 
-The main finding is that **adaptive k-allocation is not universally better than a fixed-k baseline**.
+The main finding is that **adaptive \(k\)-allocation is not universally better than a fixed-\(k\) baseline**.
 
-- On **Peptides-func** and **Peptides-struct**, **fixed k = 15** performed best.
+- On **Peptides-func** and **Peptides-struct**, **fixed \(k = 15\)** performed best in the three-seed summary.
 - On **PascalVOC-SP**, the **hybrid adaptive method** achieved the strongest result:
   - **50.35 ± 5.66 F1** (hybrid adaptive)
-  - **47.23 ± 7.53 F1** (fixed k)
+  - **47.23 ± 7.53 F1** (fixed \(k\))
 
-This suggests that adaptive sparsification may be more helpful on **larger, more complex graph tasks** than on smaller graph-level benchmarks.
+This suggests that adaptive sparsification may be more useful on **larger, more complex graph tasks** than on smaller graph-level benchmarks.
+
+### Representative run comparison
+
+![Representative method comparison](results/method_comparison_bars.png)
+
+---
 
 ## Methods
 
+### Base k-MIP attention
+
+For node features \(X \in \mathbb{R}^{N \times d}\), each attention head computes queries, keys, and values:
+
+\[
+Q^h = XW_Q^h, \qquad K^h = XW_K^h, \qquad V^h = XW_V^h
+\]
+
+with score matrix
+
+\[
+S^h = \frac{1}{\sqrt{d_K}} Q^h (K^h)^\top
+\]
+
+k-MIP keeps only the top-\(k\) entries in each row before softmax:
+
+\[
+\tilde S^h_{ij} =
+\begin{cases}
+S^h_{ij}, & j \in \mathrm{TopK}_i(k) \\
+-\infty, & \text{otherwise}
+\end{cases}
+\]
+
+and applies attention as usual:
+
+\[
+A^h_{ij} = \frac{\exp(\tilde S^h_{ij})}{\sum_{m=1}^{N} \exp(\tilde S^h_{im})}, \qquad \text{output} = A^h V^h
+\]
+
 ### Compared strategies
 
-1. **Fixed k = 15**
-2. **Global cosine annealing**
-   - Uniform allocation across layers
-   - **45 → 5** on Peptides
-   - **30 → 10** on PascalVOC-SP
-3. **Layerwise cosine annealing**
-   - Same temporal schedule, with depth-dependent scaling
-4. **Hybrid entropy-adaptive**
-   - Layerwise cosine schedule
-   - Additional per-query adjustment based on attention entropy
+Let:
+- \(k_{\max}\) = initial attention budget
+- \(k_{\min}\) = minimum attention budget
+- \(t\) = epoch
+- \(T\) = total number of epochs
+- \(t_w\) = warmup epochs
+- \(l \in \{0, \dots, L-1\}\) = layer index
+- \(L\) = number of layers
+- \(\rho\) = deepest-layer ratio
+- \(\alpha\) = entropy exponent
 
-### Intuition
+---
 
-The project decomposes k-allocation into three dimensions:
+### 1. Fixed \(k\)
 
-- **Temporal adaptation**: reduce the attention budget over training
-- **Layerwise adaptation**: allocate larger budgets to earlier layers and tighter budgets to deeper layers
-- **Querywise adaptation**: assign more keys to higher-entropy queries and fewer keys to already concentrated ones
+A constant attention budget is used at every epoch and every layer:
 
-The motivation is to allow broader exploration earlier in training while preserving the efficiency benefits of sparse attention later.
+\[
+k_l^{(t)} = k = 15
+\]
+
+This is the baseline used in all comparisons.
+
+---
+
+### 2. Global cosine annealing
+
+A single epoch-dependent budget is shared across all layers.
+
+For \(t < t_w\):
+
+\[
+k_{\text{base}}(t) = k_{\max}
+\]
+
+For \(t \ge t_w\):
+
+\[
+k_{\text{base}}(t)
+=
+k_{\min}
++
+\frac{1}{2}(k_{\max}-k_{\min})
+\left(
+1 + \cos\left(\pi \frac{t-t_w}{T-t_w}\right)
+\right)
+\]
+
+and the layer budget is uniform:
+
+\[
+k_l^{(t)} = \mathrm{round}(k_{\text{base}}(t))
+\]
+
+Used in this project as:
+- **Peptides:** \(45 \rightarrow 5\)
+- **PascalVOC-SP:** \(30 \rightarrow 10\)
+
+---
+
+### 3. Layerwise cosine annealing
+
+The same cosine base schedule is used, but it is scaled across depth so earlier layers keep larger budgets.
+
+First compute the base schedule:
+
+\[
+k_{\text{base}}(t)
+=
+k_{\min}
++
+\frac{1}{2}(k_{\max}-k_{\min})
+\left(
+1 + \cos\left(\pi \frac{t-t_w}{T-t_w}\right)
+\right)
+\]
+
+Then define a linear layer scale:
+
+\[
+s_l = 1 - (1-\rho)\frac{l}{L-1}
+\]
+
+with \(\rho = 0.45\), and assign each layer:
+
+\[
+k_l^{(t)} = \max\left(k_{\min}, \left\lfloor k_{\text{base}}(t)\, s_l \right\rceil \right)
+\]
+
+This keeps shallow layers broader and makes deeper layers sparse earlier.
+
+---
+
+### 4. Hybrid layerwise + entropy-adaptive allocation
+
+This combines:
+- the **layerwise cosine schedule** above, and
+- a **querywise entropy-adaptive** \(k\) inside each layer.
+
+First compute the layerwise budget:
+
+\[
+k_l^{(t)} = \max\left(k_{\min}, \left\lfloor k_{\text{base}}(t)\, s_l \right\rceil \right)
+\]
+
+For query \(i\), the attention entropy is:
+
+\[
+H(a_i) = -\sum_j a_{ij}\log a_{ij}
+\]
+
+The normalized entropy score is:
+
+\[
+\bar H_i =
+\left(
+\frac{H(a_i)}{\log k_l^{(t)}}
+\right)^\alpha
+\]
+
+with \(\alpha = 1.25\).
+
+The final querywise budget is then:
+
+\[
+k_i = k_{\min} + \left\lfloor \big(k_l^{(t)} - k_{\min}\big)\bar H_i \right\rceil
+\]
+
+So:
+- **high-entropy / uncertain queries** receive larger \(k\)
+- **low-entropy / already concentrated queries** receive smaller \(k\)
+
+---
+
+## Visualizing the scheduling strategies
+
+![Scheduling strategies](results/k_scheduling_strategies.png)
+
+![Layerwise k profiles](results/per_layer_k_profiles.png)
+
+---
 
 ## Experimental Setup
 
-- **Framework**: GraphGPS + k-MIP
-- **Datasets**:
+- **Framework:** GraphGPS + k-MIP
+- **Datasets:**
   - Peptides-func
   - Peptides-struct
   - PascalVOC-SP
-- **Model configuration**:
+- **Model configuration:**
   - 8 layers
   - 4 attention heads
   - Hidden dimension: 52
   - GatedGCN local message passing
   - Two-layer output MLP
-- **Training**:
+- **Training:**
   - AdamW optimizer
   - Cosine learning-rate decay
-- **Compute setting**:
+- **Compute setting:**
   - 3 random seeds
   - 50 epochs on Peptides benchmarks
   - 60 epochs on PascalVOC-SP
   - Compute-constrained study
 
-## Results Summary
+---
+
+## Results Summary (three-seed mean ± std)
 
 | Method | Peptides-func (AP ↑) | Peptides-struct (MAE ↓) | PascalVOC-SP (F1 ↑) |
 |--------|----------------------:|-------------------------:|--------------------:|
-| Fixed k = 15 | 63.01 ± 0.67 | 0.2652 ± 0.0039 | 47.23 ± 7.53 |
+| Fixed \(k = 15\) | **63.01 ± 0.67** | **0.2652 ± 0.0039** | 47.23 ± 7.53 |
 | Cosine annealing | 61.14 ± 1.67 | 0.2784 ± 0.0056 | 47.99 ± 0.97 |
 | Layerwise cosine | 60.77 ± 0.74 | 0.2812 ± 0.0085 | 49.63 ± 3.13 |
 | Hybrid adaptive | 61.45 ± 0.48 | 0.2834 ± 0.0042 | **50.35 ± 5.66** |
 
+### Improvement over fixed-\(k\) baseline
+
+![Improvement over baseline](results/improvement_over_baseline.png)
+
+---
+
+## Mechanism Checks
+
+### Attention entropy over training
+
+Adaptive schedules consistently reduce attention entropy relative to the fixed baseline, showing that annealing makes attention progressively more selective.
+
+![Attention entropy evolution](results/attention_entropy_evolution.png)
+
+### Runtime and memory trade-offs
+
+Adaptive methods are not free: they can improve F1 on PascalVOC-SP, but often use more memory and may increase total wall-clock time depending on the stopping pattern.
+
+![Runtime and memory](results/runtime_memory_bars.png)
+
+---
+
 ## Main Takeaways
 
-- **Fixed k remained strongest** on the smaller peptide datasets.
+- **Fixed \(k\) remained strongest** on the smaller peptide datasets.
 - **Adaptive schedules helped most on PascalVOC-SP**, where the hybrid method performed best.
-- **Entropy curves and layerwise k profiles confirmed** that the schedules behaved as intended, even when performance gains were limited.
+- **Entropy curves and layerwise \(k\) profiles confirmed** that the schedules behaved as intended, even when performance gains were limited.
 - **Runtime and memory trade-offs were dataset-dependent**:
   - On peptide tasks, adaptive methods often stopped earlier but used more peak memory.
   - On PascalVOC-SP, adaptive methods cost more overall but produced better F1.
+
+---
 
 ## Repository Structure
 
@@ -100,9 +290,13 @@ The motivation is to allow broader exploration earlier in training while preserv
 │   └── Adaptive_k_Allocation_for_k_MIP_Attention.pdf
 ├── notebooks/
 │   └── kmips_extension.ipynb
-├── figures/
-│   ├── entropy_curves.png
-│   ├── layerwise_k_profiles.png
-│   ├── runtime_memory.png
-│   └── results_summary.png
-└── requirements.txt
+├── results/
+│   ├── attention_entropy_evolution.png
+│   ├── improvement_over_baseline.png
+│   ├── k_scheduling_strategies.png
+│   ├── method_comparison_bars.png
+│   ├── per_layer_k_profiles.png
+│   ├── runtime_memory_bars.png
+│   ├── all_lrgb_results.json
+│   ├── three_seed_summary_table.csv
+│   └── runtime_memory_table.csv
