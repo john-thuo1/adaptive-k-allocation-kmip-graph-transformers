@@ -330,20 +330,6 @@ The conclusions should therefore be interpreted as a targeted empirical comparis
 
 ---
 
-## Citation
-
-If you reference this repository, please cite:
-
-```bibtex
-@misc{thuo2026adaptivekallocation,
-  title={Adaptive k-Allocation for k-MIP Attention in Graph Transformers: A Compute-Constrained Empirical Study},
-  author={John Thuo},
-  year={2026}
-}
-```
-
----
-
 ## Acknowledgements
 
 This project builds on prior work in:
